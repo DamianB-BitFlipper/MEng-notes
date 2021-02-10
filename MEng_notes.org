@@ -1,0 +1,77 @@
+#+TITLE Thesis Overview
+
+* Accomplished + Current
+** Coding Practices
+*** When to invoke Webauthn security check
+- Record state changes and only commit them if/when webauthn is authenticated
+  - Useful in cases where it is not known if webauthn is needed unless a protected field is modified
+- Ask for Webauthn at the beginning, regardless
+  - Simplest
+- Have a plan to rollback if webauthn is rejected
+  - Patchwork
+*** Retrieving first phase Webauthn options
+- Traditionally done with an initial POST call
+  - Server side needs a route for every begin/finish call
+  - Is not very elegant whenever this operation should support both webauthn and non-webauthn invocation
+  - Benefit is authentication text can be fully created on the server side which has the greatest context
+- Pre-load a browser cookie with webauthn option
+  - It is possible to "fill in blanks" using javascript with access to form data unless authentication text depends on context not available to front-end
+  - No need for two-way POST calls which deviate from traditional client-server flow
+- Pre-load a hidden field in form with webauthn options
+  - Preferred to cookie method since it is more organized
+  - Easier to keep track of multiple pre-loaded options if several operations on same webpage could require webauthn authentication
+  - No need for two-way POST calls which deviate from traditional client-server flow
+- Login webauthn cannot be pre-loaded in web-page, because authentication object contains user specific details.
+  - These details are unknown until user logs in
+- Extension text need not be saved in server's session if it can be recreated identically during Finish webauth phase
+** Do's, Don'ts and Limitations of Authentication Text
+*** Best use cases
+- Whenever there is little context involved in transaction event
+- Items of transaction are easy to display to user, human-readable
+*** Poor use cases
+- There is a lot of context to authenticate
+  - Submitting a big form with many entries
+  - One solution is to display only entries that are critical to be correct. If any others are incorrect, results in non-fatal error
+- Context to display is not friendly for human-readability
+  - Displaying an SSH key is long and not human friendly
+- Context difficult or impossible to display to use
+  - Rich media such as an image, especially if the authenticator device does not have a capable display
+  - Binary uploads from releases
+*** Don'ts use cases
+- Transaction authentication is incapable of performing any secure input under threat model
+  - Inputting a credit card is not possible
+  - Setting new password
+*** TODO
+- Possibility of colliding authentication texts for two different operations
+- Construction of misleading texts for user, indicating one operation, but really authenticating another
+** RPC Isolation
+- Be sure to isolate components by permissions. Does not make sense to isolate part of the database when another exposed app can attain access to the database already
+- Pre-loading needs to access every RPC server that could be possibly involved to get respective challenge nonces
+- Pre-loading needs to pre-load with options from every rpc server bubble accessible in the current web-page. This is because the challenge is specific to each rpc server bubble.
+- Try to design code to form a DAG of information flow
+  - Minimize times where there is back and forth between modules of the server
+  - Hard to isolate into RPC bubbles
+- RPC server needs way of having a session in order to remember the challenge
+- Checks such as `if !c.Repo.IsOwner()` should occur in WebauthnFinish function since that is where deletion happens to be safe
+  - If it occurs in the WebauthnBegin funciton, an adversary could send a request that passes there, but then one that does not in the Finish
+  - Normally user should catch this because message should be distinct, but just to be safe
+- Sending over attestation credentials from client is tricky if POST method receiver is expecting a form
+  - Make entry of the form a JSON string of the webauthn options
+- What about server source code for deleting repository for case when webauthn is not enabled. Need to handle both cases
+- Parts of code that set bit for if Webauthn is enabled need to be protected as well. If not, an attacker could clear that bit and then bypass all of the webauthn securities (since this website supports accounts w/o webauthn enabled)
+  - Disabling webauthn should require an authentication event
+  - Setting the admin bit should also be protected
+*** TODO
+- Why is Kimchi bad/ugly to port over to RPC isolated webauthn?
+* Future
+** Tracing Webauthn Subversion Opportunities
+- User is trying to delete repo B. Repository A is very important. Directly before the user authenticates the delete event of B, the attacker renames repo A to B, and actually issues the deletion of repo B (was A). The user thinks he's doing one thing, but in reality he's doing another, deleting the important repository!
+  - Sneaky rename attack is also possible for releases, where they could be renamed right before being deleted
+  - Rename operation must be protected, but that will be cumbersome for user experience since it "seems" like a low-priority operation, but with big consequences
+- Adversary could create a user without webauthn enabled. Add them as an owner of the target repository and then perform delete operation from unsecured user. Thus add owner must also be protected
+- `DeleteRepositoryFinish` code in RPC Server does not check relationship between `userID` and `ownerID, repoID`. Namely an adversary with a compromised server front-end could send a `userID` without Webauthn, but the `ownerID, repoID` of a some targeted repository
+  - This relationship code is performed in the front-end Contexter `RepoAssignment` function
+- Front-end server may simply issue delete as `Admin` user, if admin does not have webauthn enabled either
+- The `CreateRepository` in the `CreatePost` function call resides in the front-end. It has an error handler that deletes the latent repository, but that handler can be tricked by the return value of the `CreateRepository` in order delete a targeted repository. As a result, `CreateRepository` and related helper functions must be in the Repo RPC server.
+- The `MigrateRepository` call in `MigratePost` is the same deal as the `CreateRepository`
+** Proxy Front-End Service Mediating for Webauthn User

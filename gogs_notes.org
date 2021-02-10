@@ -1,0 +1,93 @@
+* Ideas
+- Pre-load web-pages that could require authentication with the authentication objects such that web-browser only has to reply with attestation
+  - No need for two-way communication as in original webauthn spec
+  - Mimics control flow of a regular web request (non-webauthn)
+  - Pre-loading needs to pre-load with options from every rpc server bubble accessible in the current web-page. This is because the challenge is specific to each rpc server bubble.
+- Have the client side javascript fill the `extensions` field with the transaction authentication message
+* Discussion
+- Flow of webauthn vs OTP 2FA
+* Tips
+- Be sure to isolate components by permissions. Does not make sense to isolate part of the database when another exposed app can attain access to the database already
+- Golang use field tags to annotate which DB fields should require authentication to modify
+- Using a hidden field in a form instead of a cookie is better for pre-loading the webauthn options since options may be more specific to the form and action they represent. Also organizing it is cleaner, the form acts as a namespace of sorts, than using a cookie which is globally visible.
+* Principles
+- Any operation that modifies a secure column in the database must be secured
+- Try to design code to form a DAG of information flow
+  - Minimize times where there is back and forth between modules of the server
+  - Hard to isolate into RPC bubbles
+* Scenarios
+** Bad Case
+1. perform state change
+2. state change requires webauthn
+3. user rejects
+
+Left over with junk state
+
+Need to either:
+- commit state changes at the end
+- have plan for rollback
+- ask for webauthn authentication at the beginning
+** Good Case
+1. mark state change
+2. mark state change
+3. ask for webauthn
+4. user accepts/rejects
+5. Commit marked state change or throw away
+* Notes
+- Login webauthn cannot be pre-loaded in web-page, because authentication object contains user specific details.
+  - These details are unknown until user logs in
+- Challenge must also be generated in secure bubble, not outside of it, in order to retain the threat model
+- RPC server needs way of having a session in order to remember the challenge
+- Rethink how webauthn login works since errors return c.NotFound() whereas success returns JSON. Different response types do not play well together.
+- Cannot serialize http.Request easily to send to RPC backend server
+- Need to have new POST url for every webauthn transaction element. Could be obstructive for a service with many items to txAuthn secure
+- Checks such as `if !c.Repo.IsOwner()` should occur in WebauthnFinish function since that is where deletion happens to be safe
+  - If it occurs in the WebauthnBegin funciton, an adversary could send a request that passes there, but then one that does not in the Finish
+  - Normally user should catch this because message should be distinct, but just to be safe
+- Sending over attestation credentials is tricky if POST method receiver is expecting a form
+  - Make entry of the form a JSON string of the webauthn options
+- What about server source code for deleting repository for case when webauthn is not enabled. Need to handle both cases
+- Parts of code that set bit for if Webauthn is enabled need to be protected as well. If not, an attacker could clear that bit and then bypass all of the webauthn securities (since this website supports accounts w/o webauthn enabled)
+  - Disabling webauthn should require an authentication event
+  - Setting the admin bit should also be protected
+- Is there a good way to centralize the permissions of a given function. Ie) the if statement in the `DeleteRepositoryFinish` function that checks if webauthn is enabled, check it. If it is not enabled, delete directly. If admin, check the admin credentials.
+- Pre-loading needs to access every RPC server that could be possibly involved to get respective challenge nonces
+- Must have API route for generic webauthn begin for every RPC bubble
+  - No way to pre-load API calls since there is no "GET" request
+- Unsure what origin checking does since the origin is set by the web-browser which could be compromised
+** Webauthn Use Cases
+- Input SSH key difficult to txAuthn because text is long for user to read
+- Password change is not possible because need secure input
+  - Is it a good idea to ask for a confirmation, showing the old and new passwords on device?
+- How to authenticate image such as for Avatar setting (txAuthnGeneral)
+- Webauthn via a proxy is an open question. There are Personal Access Tokens. Could webauthn be invoked for a remotely called delete repository event, for example?
+- When adding Authentication Source through the Admin panel, what is a good way of authenticating the entire form being sent
+- Transfer ownership could be done, no need for secure input
+- Releases are super complicated to txAuthn it looks like
+- Sneaky attacks: User is trying to delete repo B. Repository A is very important. Directly before the user authenticates the delete event of B, the attacker renames repo A to B, and actually issues the deletion of repo B (was A). The user thinks he's doing one thing, but in reality he's doing another, deleting the important repository!
+  - Sneaky rename attack is also possible for releases, where they could be renamed right before being deleted
+
+** Subverting DeleteRepository Defenses
+- Rename the repository right before the user is going to delete it
+- Add user as a teammate owner of a repository within an organization. This user does not have webauthn/is entirely compromised and may delete repository on their own
+- `DeleteRepositoryFinish` code in RPC Server does not check relationship between `userID` and `ownerID, repoID`. Namely an adversary with a compromised server front-end could send a `userID` without Webauthn, but the `ownerID, repoID` of a some targeted repository
+  - This relationship code is performed in the front-end Contexter `RepoAssignment` function
+- Front-end server may simply issue delete as `Admin` user, if admin does not have webauthn enabled either
+- The `CreateRepository` in the `CreatePost` function call resides in the front-end. It has an error handler that deletes the latent repository, but that handler can be tricked by the return value of the `CreateRepository` in order delete a targeted repository. As a result, `CreateRepository` and related helper functions must be in the Repo RPC server.
+- The `MigrateRepository` call in `MigratePost` is the same deal as the `CreateRepository`
+
+* Future Work
+- Webauthn enables a proxy front-end service to issue commands on behalf of user
+- Why is Kimchi bad/ugly to port over to RPC isolated webauthn?
+- Authentication text possible collisions in strings
+- Systematic way of detecting webauthn subversion opportunities
+* TODO
+- There needs to be a good way of notifying user to answer txAuthn whenever an operation requests it
+- Check if API actually checks access tokens and that they cannot be leaked
+- All webauthn operations should be begin RPC wall
+- Move the registration part of webauthn also into the Webauthn RPC server so that only the RPC server deals w/ the webauthn db table
+- Unify the code for this txAuthn text format in the creating and verifying end
+- Make extension verifier not return the session data since that is not needed for gogs txAuthn
+- Investigate how to handle the case where admin should also be able to delete a repository. So need another authenticated channel apart from user's control flow to the delete repository server.
+- In the RPC libraries, instead of doing Repo_ and Webauthn_, figure out how golang does namespaces.
+- Get the Repo_RPC and Webauthn_RPC port numbers into the config file
